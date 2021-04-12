@@ -122,6 +122,7 @@ struct i40e_vf {
 	int ingress_vlan;
 	u16 egress_rule_id;
 	int egress_vlan;
+	bool data_changed;
 	DECLARE_BITMAP(trunk_vlans, VLAN_N_VID);
 	bool trunk_set_by_pf;
 	bool allow_untagged;
@@ -160,8 +161,12 @@ int i40e_ndo_set_vf_mac(struct net_device *netdev, int vf_id, u8 *mac);
 int i40e_set_ingress_mirror_netdev(struct net_device *netdev, int vf_id,const int mirror);
 //int i40e_set_mirror_netdev(struct net_device *netdev, int vf_id,const int mirror);
 int i40e_set_pf_ingress_mirror_netdev(struct net_device *netdev, const int mirror);
+int i40e_get_pf_ingress_mirror_netdev(struct net_device *netdev, int *mirror);
+
 int i40e_rem_mirror(struct net_device *netdev, int vf_id);
-int i40e_ndo_set_vf_mirror(struct net_device *netdev, struct ifla_vf_mirror *ivm);
+
+int i40e_ndo_set_vf_mirror(struct net_device *netdev, struct nlattr *vf_mirror);
+int i40e_ndo_get_vf_mirror(struct net_device *netdev, struct ifla_vf_mirror_info *vf_mirror);
 #ifdef IFLA_VF_VLAN_INFO_MAX
 int i40e_ndo_set_vf_port_vlan(struct net_device *netdev, int vf_id,
 			      u16 vlan_id, u8 qos, __be16 vlan_proto);

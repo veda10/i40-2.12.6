@@ -1,0 +1,1 @@
+cmd_/root/DRIVER_INTEL_for_fedora/repo/i40-2.12.6/src/i40e.ko := ld -r -m elf_x86_64 --build-id=sha1  -T scripts/module.lds -o /root/DRIVER_INTEL_for_fedora/repo/i40-2.12.6/src/i40e.ko /root/DRIVER_INTEL_for_fedora/repo/i40-2.12.6/src/i40e.o /root/DRIVER_INTEL_for_fedora/repo/i40-2.12.6/src/i40e.mod.o;  true

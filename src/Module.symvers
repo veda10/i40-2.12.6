@@ -1,0 +1,2 @@
+0x00000000	i40e_register_client	/root/DRIVER_INTEL_for_fedora/repo/i40-2.12.6/src/i40e	EXPORT_SYMBOL	
+0x00000000	i40e_unregister_client	/root/DRIVER_INTEL_for_fedora/repo/i40-2.12.6/src/i40e	EXPORT_SYMBOL	

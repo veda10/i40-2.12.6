@@ -1,0 +1,1 @@
+cmd_/root/DRIVER_INTEL_for_fedora/repo/i40-2.12.6/src/modules.order := {   echo /root/DRIVER_INTEL_for_fedora/repo/i40-2.12.6/src/i40e.ko; :; } | awk '!x[$$0]++' - > /root/DRIVER_INTEL_for_fedora/repo/i40-2.12.6/src/modules.order

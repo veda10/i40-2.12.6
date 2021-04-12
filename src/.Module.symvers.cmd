@@ -1,0 +1,1 @@
+cmd_/root/DRIVER_INTEL_for_fedora/repo/i40-2.12.6/src/Module.symvers := sed 's/ko$$/o/' /root/DRIVER_INTEL_for_fedora/repo/i40-2.12.6/src/modules.order | scripts/mod/modpost     -o /root/DRIVER_INTEL_for_fedora/repo/i40-2.12.6/src/Module.symvers -e -i Module.symvers   -T -
