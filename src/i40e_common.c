@@ -2898,7 +2898,6 @@ static i40e_status i40e_mirrorrule_op(struct i40e_hw *hw,
 	u16 buf_size;
 
 	buf_size = count * sizeof(*mr_list);
-        printk("at mirrorrule_op in common.c\n");
 	/* prep the rest of the request */
 	i40e_fill_default_direct_cmd_desc(&desc, opcode);
 	cmd->seid = CPU_TO_LE16(sw_seid);

@@ -16072,7 +16072,6 @@ static int i40e_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		if (pci_num_vf(pdev)) {
 			dev_info(&pdev->dev,
 				 "Active VFs found, allocating resources.\n");
-                        printk("In i40_probe in main.c calling i40e_alloc_vfs\n");
 			err = i40e_alloc_vfs(pf, pci_num_vf(pdev));
 			if (err)
 				dev_info(&pdev->dev,
@@ -16080,7 +16079,6 @@ static int i40e_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 					 err);
 #if !defined(HAVE_SRIOV_CONFIGURE) && !defined(HAVE_RHEL6_SRIOV_CONFIGURE)
 		} else if (pf->num_req_vfs) {
-                        printk("In i40_probe in main.c calling i40e_alloc_vfs for pf\n");
 			err = i40e_alloc_vfs(pf, pf->num_req_vfs);
 			if (err) {
 				pf->flags &= ~I40E_FLAG_SRIOV_ENABLED;

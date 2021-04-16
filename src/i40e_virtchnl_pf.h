@@ -158,12 +158,14 @@ void i40e_vc_notify_vf_reset(struct i40e_vf *vf);
 
 /* VF configuration related iplink handlers */
 int i40e_ndo_set_vf_mac(struct net_device *netdev, int vf_id, u8 *mac);
-int i40e_set_ingress_mirror_netdev(struct net_device *netdev, int vf_id,const int mirror);
-//int i40e_set_mirror_netdev(struct net_device *netdev, int vf_id,const int mirror);
+int i40e_set_ingress_mirror_netdev(struct net_device *netdev, int dst_vfid,
+		                                   unsigned long *vf_bitmap);
+int i40e_set_egress_mirror_netdev(struct net_device *netdev, int dst_vfid,
+		                                   unsigned long *vf_bitmap);
 int i40e_set_pf_ingress_mirror_netdev(struct net_device *netdev, const int mirror);
 int i40e_get_pf_ingress_mirror_netdev(struct net_device *netdev, int *mirror);
-
-int i40e_rem_mirror(struct net_device *netdev, int vf_id);
+int i40e_get_egress_mirror_netdev(struct net_device *netdev, int dst_vfid, unsigned long *mirror_src);
+int i40e_vf_clear_mirror(struct net_device *netdev, int vf_id);
 
 int i40e_ndo_set_vf_mirror(struct net_device *netdev, struct nlattr *vf_mirror);
 int i40e_ndo_get_vf_mirror(struct net_device *netdev, struct ifla_vf_mirror_info *vf_mirror);

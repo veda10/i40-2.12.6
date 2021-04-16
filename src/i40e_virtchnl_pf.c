@@ -4,9 +4,17 @@
 #include "i40e.h"
 #define I40E_MAX_VF_COUNT 128
 
-struct vf_bitmap {
-	DECLARE_BITMAP(vf_bits, I40E_MAX_VF_COUNT);
-};
+
+void dump_data(char *str, unsigned long *data, int nb_bits)
+{
+#if 0
+	int i=0;
+	printk("KART %s :- ", str);
+	for (i=0; i< BITS_TO_LONGS(nb_bits); i++)
+		printk("%0lx  ", data[i]);
+	printk("\n");
+#endif
+}
 /*********************notification routines***********************/
 
 /**
@@ -6043,17 +6051,17 @@ out:
 }
 
 
-static int i40e_set_mirror_vlan(struct net_device *netdev, int vf_id,
+static int i40e_set_mirror_netdev(struct net_device *netdev, int vf_id,
                         unsigned long *vlan_bitmap)
 {
         u16 vid, sw_seid, dst_seid, rule_id, rule_type;
         struct i40e_netdev_priv *np = netdev_priv(netdev);
         struct i40e_vsi *vsi = np->vsi;
         struct i40e_pf *pf = vsi->back;
-        int ret = 0, num = 0, cnt = 0, add = 0;
+        int ret = 0, a_num = 0, d_num = 0, cnt = 0;
         u16 rules_used, rules_free;
         struct i40e_vf *vf;
-        __le16 *mr_list;
+        __le16 *add_list =NULL, *del_list= NULL;
 
 	DECLARE_BITMAP(num_vlans, VLAN_N_VID);
 
@@ -6074,27 +6082,44 @@ static int i40e_set_mirror_vlan(struct net_device *netdev, int vf_id,
 	bitmap_xor(num_vlans, vf->mirror_vlans, vlan_bitmap, VLAN_N_VID);
 	cnt = bitmap_weight(num_vlans, VLAN_N_VID);
 	if (!cnt)
+	{
+		ret = 0; /* No CHange */
 		goto out;
-	mr_list = kcalloc(cnt, sizeof(__le16), GFP_KERNEL);
-	if (!mr_list) {
+	}
+	add_list = kcalloc(cnt, sizeof(__le16), GFP_KERNEL);
+	if (!add_list) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	del_list = kcalloc(cnt, sizeof(__le16), GFP_KERNEL);
+	if (!del_list) {
 		ret = -ENOMEM;
 		goto out;
 	}
 
-
-	bitmap_and(num_vlans, vlan_bitmap, num_vlans, VLAN_N_VID);
-	add = bitmap_weight(num_vlans, VLAN_N_VID);
-	if (add) {
-		
-		for_each_set_bit(vid, vlan_bitmap, VLAN_N_VID) {
-			if (!test_bit(vid, vf->mirror_vlans)) {
-				mr_list[num] = CPU_TO_LE16(vid);
-				num++;
-			}
+	for_each_set_bit(vid, num_vlans, VLAN_N_VID) {
+		if (test_bit(vid, vlan_bitmap)) {
+			add_list[a_num] = CPU_TO_LE16(vid);
+			a_num++;
 		}
+		else {
+			del_list[d_num] = CPU_TO_LE16(vid);
+			d_num++;
+		}
+	}
+
+	if (d_num) {
+		ret = i40e_aq_delete_mirrorrule(&pf->hw, sw_seid, rule_type,
+						vf->vlan_rule_id, d_num, del_list,
+						NULL, &rules_used,
+						&rules_free);
+		if (ret)
+			goto out;
+	}
+	if (a_num) {
 		ret = i40e_aq_add_mirrorrule(&pf->hw, sw_seid,
 					     rule_type, dst_seid,
-					     cnt, mr_list, NULL,
+					     a_num, add_list, NULL,
 					     &rule_id, &rules_used,
 					     &rules_free);
 
@@ -6102,57 +6127,20 @@ static int i40e_set_mirror_vlan(struct net_device *netdev, int vf_id,
 			dev_warn(&pf->pdev->dev, "Not enough resources to assign a mirror rule\n");
 
 		if (ret)
-			goto err_free;
+			goto out;
 		vf->vlan_rule_id = rule_id;
-	} else {
-		for_each_set_bit(vid, vf->mirror_vlans, VLAN_N_VID) {
-			if (!test_bit(vid, vlan_bitmap)) {
-				mr_list[num] = CPU_TO_LE16(vid);
-				num++;
-			}
-		}
-		ret = i40e_aq_delete_mirrorrule(&pf->hw, sw_seid, rule_type,
-						vf->vlan_rule_id, cnt, mr_list,
-						NULL, &rules_used,
-						&rules_free);
-		if (ret)
-			goto err_free;
 	}
 
 
 	bitmap_copy(vf->mirror_vlans, vlan_bitmap, VLAN_N_VID);
 	vf->data_changed = true;
-err_free:
-	kfree(mr_list);
 out:
 	clear_bit(__I40E_VIRTCHNL_OP_PENDING, pf->state);
+	if (add_list)
+		kfree(add_list);
+	if (del_list)
+		kfree(del_list);
 	return ret;
-}
-
-int i40e_set_mirror_netdev(struct net_device *netdev, int vf_id,
-                            const int mirror)
-{
-        int ret = 0;
-        unsigned long *vlan_bitmap;
-
-        vlan_bitmap = kcalloc(BITS_TO_LONGS(VLAN_N_VID), sizeof(unsigned long),
-                           GFP_KERNEL);
-        if (!vlan_bitmap)
-                return -ENOMEM;
-        if (mirror == 0) {
-                bitmap_zero (vlan_bitmap, VLAN_N_VID);
-        }
-        else {  
-                if (i40e_get_mirror_netdev(netdev, vf_id, vlan_bitmap) < 0) {
-                        goto err_free;
-                }
-                bitmap_set(vlan_bitmap, mirror, 1);
-        }
-        ret = i40e_set_mirror_vlan(netdev, vf_id, vlan_bitmap);
-err_free:
-        kfree(vlan_bitmap);
-        return ret;
-
 }
 
 /**
@@ -6938,20 +6926,32 @@ err:
  *
  * Returns 0 on success, negative on failure
  **/
-static int i40e_get_ingress_mirror_netdev(struct net_device *netdev, int vf_id, int *mirror)
+static int i40e_get_ingress_mirror_netdev(struct net_device *netdev, int dst_vfid, unsigned long *mirror_src)
 {
         struct i40e_netdev_priv *np = netdev_priv(netdev);
         struct i40e_vsi *vsi = np->vsi;
         struct i40e_pf *pf = vsi->back;
-        struct i40e_vf *vf;
+        struct i40e_vf *src_vf;
+	int src_vfid;
         int ret;
+	int numvfs = pf->num_alloc_vfs;
 
-        /* validate the request */
-        ret = i40e_validate_vf(pf, vf_id);
+        ret = i40e_validate_vf(pf, dst_vfid);
         if (ret)
-                goto err_out;
-        vf = &pf->vf[vf_id];
-        *mirror = vf->ingress_vlan;
+		goto err_out;
+	bitmap_zero(mirror_src, I40E_MAX_VF_COUNT);
+
+	/* validate the request */
+	for (src_vfid=0; src_vfid < numvfs; src_vfid++) {
+		ret = i40e_validate_vf(pf, src_vfid);
+		if (ret)
+			goto err_out;
+		src_vf = &pf->vf[src_vfid];
+		if (src_vf->ingress_vlan == dst_vfid) {
+			bitmap_set(mirror_src, src_vfid, 1);
+		}
+		dump_data("While getting ingress mirror", mirror_src, I40E_MAX_VF_COUNT);
+	}
 err_out:
         return ret;
 }
@@ -7001,7 +7001,6 @@ static int i40e_set_ingress_mirror(struct pci_dev *pdev, int vf_id,
 	u16 rule_type, rule_id;
 	int ret;
 
-	printk("%s src: vf_id : %d mirror : %d\n", __FUNCTION__, vf_id, mirror);
 	/* validate the request */
 	ret = i40e_validate_vf(pf, vf_id);
 	if (ret)
@@ -7044,134 +7043,152 @@ err_out:
 }
 
 
-int i40e_set_ingress_mirror_netdev(struct net_device *netdev, int vf_id,
-				   const int mirror)
+int i40e_set_ingress_mirror_netdev(struct net_device *netdev, int dst_vfid,
+				   unsigned long *vf_bitmap)
 {
 	struct i40e_netdev_priv *np = netdev_priv(netdev);
         struct i40e_vsi *vsi = np->vsi;
         struct i40e_pf *pf = vsi->back;
-	struct i40e_vsi *src_vsi, *mirror_vsi;
-	struct i40e_vf *vf, *mirror_vf;
+	struct i40e_vsi *src_vsi, *dst_vsi;
+	struct i40e_vf *dst_vf, *src_vf;
+	int src_vfid;
 	u16 rule_type, rule_id;
 	int ret;
+	DECLARE_BITMAP(mirrored_src, I40E_MAX_VF_COUNT);
+	DECLARE_BITMAP(changed_src, I40E_MAX_VF_COUNT);
 
-	printk("%s src: vf_id : %d mirror : %d\n", __FUNCTION__, vf_id, mirror);
 	/* validate the request */
-	ret = i40e_validate_vf(pf, vf_id);
+	ret = i40e_validate_vf(pf, dst_vfid);
 	if (ret)
 		goto err_out;
-	vf = &pf->vf[vf_id];
+	dst_vf = &pf->vf[dst_vfid];
 	
-	printk("Checkpoint 1 , In set_ingress_mirror_netdev\n");
-
 	/* The Admin Queue mirroring rules refer to the traffic
 	 * directions from the perspective of the switch, not the VSI
 	 * we apply the mirroring rule on - so the behaviour of a VSI
 	 * ingress mirror is classified as an egress rule
 	 */
 	rule_type = I40E_AQC_MIRROR_RULE_TYPE_VPORT_EGRESS;
-	src_vsi = pf->vsi[vf->lan_vsi_idx];
-	if (mirror == I40E_NO_VF_MIRROR) {
-		/* Del mirrors */
-		rule_id = vf->ingress_rule_id;
-		ret = i40e_del_ingress_egress_mirror(src_vsi, rule_type,
-						     rule_id);
-		if (ret)
-			goto err_out;
-		vf->ingress_vlan = I40E_NO_VF_MIRROR;
-	} else {
-		/* validate the mirror */
-		ret = i40e_validate_vf(pf, mirror);
-		if (ret)
-			goto err_out;
-		mirror_vf = &pf->vf[mirror];
-		mirror_vsi = pf->vsi[mirror_vf->lan_vsi_idx];
+	dst_vsi = pf->vsi[dst_vf->lan_vsi_idx];
+	ret = i40e_get_ingress_mirror_netdev(netdev, dst_vfid, mirrored_src);
+	if (ret)
+		goto err_out;
+	bitmap_xor(changed_src, mirrored_src, vf_bitmap, I40E_MAX_VF_COUNT);
 
-		/* Add mirrors */
-		ret = i40e_add_ingress_egress_mirror(src_vsi, mirror_vsi,
-						     rule_type, &rule_id);
-		if (ret)
-			goto err_out;
-		mirror_vf->data_changed = true;
-		vf->ingress_vlan = mirror;
-		vf->ingress_rule_id = rule_id;
+	for_each_set_bit(src_vfid, changed_src, I40E_MAX_VF_COUNT) {
+		src_vf = &pf->vf[src_vfid];
+		src_vsi = pf->vsi[src_vf->lan_vsi_idx];
+
+		if(test_bit(src_vfid, vf_bitmap)) {
+			/* Add mirrors */
+			ret = i40e_add_ingress_egress_mirror(src_vsi, dst_vsi,
+							     rule_type, &rule_id);
+			if (ret)
+				goto err_out;
+			src_vf->ingress_vlan = dst_vfid;
+			src_vf->ingress_rule_id = rule_id;
+		}
+		else {
+			/* Del mirrors */
+			rule_id =src_vf->ingress_rule_id;
+			ret = i40e_del_ingress_egress_mirror(src_vsi, rule_type,
+							     rule_id);
+			if (ret)
+				goto err_out;
+			src_vf->ingress_vlan = I40E_NO_VF_MIRROR;
+		}
+		dst_vf->data_changed = true;
 	}
-	printk("Checkpoint 2 , In set_ingress_mirror_netdev\n");
 err_out:
-	if (ret < 0) {
-		printk("In %s err : %d src vf_id: %d mirror : %d\n",__FUNCTION__, ret, vf_id, mirror);
-	}
 	return ret;
 }
 
 
-static int i40e_get_egress_mirror_netdev(struct net_device *netdev, int vf_id, int *mirror)
+int i40e_set_egress_mirror_netdev(struct net_device *netdev, int dst_vfid,
+				   unsigned long *vf_bitmap)
 {
 	struct i40e_netdev_priv *np = netdev_priv(netdev);
         struct i40e_vsi *vsi = np->vsi;
         struct i40e_pf *pf = vsi->back;
-        struct i40e_vf *vf;
-        int ret;
+	struct i40e_vsi *src_vsi, *dst_vsi;
+	struct i40e_vf *dst_vf, *src_vf;
+	int src_vfid;
+	u16 rule_type, rule_id;
+	int ret;
+	DECLARE_BITMAP(mirrored_src, I40E_MAX_VF_COUNT);
+	DECLARE_BITMAP(changed_src, I40E_MAX_VF_COUNT);
 
-        /* validate the request */
-        ret = i40e_validate_vf(pf, vf_id);
-        if (ret)
-                goto err_out;
-        vf = &pf->vf[vf_id];
-        *mirror = vf->egress_vlan;
-err_out:
-        return ret;
-}
-
-static int i40e_set_egress_mirror_netdev(struct net_device *netdev, int vf_id,
-                                  const int mirror)
-{
-        struct i40e_netdev_priv *np = netdev_priv(netdev);
-        struct i40e_vsi *vsi = np->vsi;
-        struct i40e_pf *pf = vsi->back;
-        struct i40e_vsi *src_vsi, *mirror_vsi;
-        struct i40e_vf *vf, *mirror_vf;
-        u16 rule_type, rule_id;
-        int ret;
-
-        /* validate the request */
-        ret = i40e_validate_vf(pf, vf_id);
-        if (ret)
-                goto err_out;
-        vf = &pf->vf[vf_id];
+	/* validate the request */
+	ret = i40e_validate_vf(pf, dst_vfid);
+	if (ret)
+		goto err_out;
+	dst_vf = &pf->vf[dst_vfid];
 
         /* The Admin Queue mirroring rules refer to the traffic
          * directions from the perspective of the switch, not the VSI
          * we apply the mirroring rule on - so the behaviour of a VSI
          * egress mirror is classified as an ingress rule
          */
-        rule_type = I40E_AQC_MIRROR_RULE_TYPE_VPORT_INGRESS;
-        src_vsi = pf->vsi[vf->lan_vsi_idx];
-        if (mirror == I40E_NO_VF_MIRROR) {
-                /* Del mirrors */
-                rule_id = vf->egress_rule_id;
-                ret = i40e_del_ingress_egress_mirror(src_vsi, rule_type,
-                                                     rule_id);
-                if (ret)
-                        goto err_out;
-                vf->egress_vlan = I40E_NO_VF_MIRROR;
-        } else {
-                /* validate the mirror */
-                ret = i40e_validate_vf(pf, mirror);
-                if (ret)
-                        goto err_out;
-                mirror_vf = &pf->vf[mirror];
-                mirror_vsi = pf->vsi[mirror_vf->lan_vsi_idx];
+	rule_type = I40E_AQC_MIRROR_RULE_TYPE_VPORT_INGRESS;
+	dst_vsi = pf->vsi[dst_vf->lan_vsi_idx];
+	ret = i40e_get_egress_mirror_netdev(netdev, dst_vfid, mirrored_src);
+	if (ret)
+		goto err_out;
+	bitmap_xor(changed_src, mirrored_src, vf_bitmap, I40E_MAX_VF_COUNT);
 
-                /* Add mirrors */
-                ret = i40e_add_ingress_egress_mirror(src_vsi, mirror_vsi,
-                                                     rule_type, &rule_id);
-                if (ret)
-                        goto err_out;
-		mirror_vf->data_changed = true;
-                vf->egress_vlan = mirror;
-                vf->egress_rule_id = rule_id;
-        }
+	for_each_set_bit(src_vfid, changed_src, I40E_MAX_VF_COUNT) {
+		src_vf = &pf->vf[src_vfid];
+		src_vsi = pf->vsi[src_vf->lan_vsi_idx];
+
+		if(test_bit(src_vfid, vf_bitmap)) {
+			/* Add mirrors */
+			ret = i40e_add_ingress_egress_mirror(src_vsi, dst_vsi,
+							     rule_type, &rule_id);
+			if (ret)
+				goto err_out;
+			src_vf->egress_vlan = dst_vfid;
+			src_vf->egress_rule_id = rule_id;
+		}
+		else {
+			/* Del mirrors */
+			rule_id = src_vf->egress_rule_id;
+			ret = i40e_del_ingress_egress_mirror(src_vsi, rule_type,
+							     rule_id);
+			if (ret)
+				goto err_out;
+			src_vf->egress_vlan = I40E_NO_VF_MIRROR;
+		}
+		dst_vf->data_changed = true;
+	}
+err_out:
+	return ret;
+}
+
+int i40e_get_egress_mirror_netdev(struct net_device *netdev, int dst_vfid, unsigned long *mirror_src)
+{
+        struct i40e_netdev_priv *np = netdev_priv(netdev);
+        struct i40e_vsi *vsi = np->vsi;
+        struct i40e_pf *pf = vsi->back;
+        struct i40e_vf *src_vf;
+	int src_vfid;
+        int ret;
+	int numvfs = pf->num_alloc_vfs;
+
+        /* validate the request */
+        ret = i40e_validate_vf(pf, dst_vfid);
+        if (ret)
+		goto err_out;
+	bitmap_zero(mirror_src, I40E_MAX_VF_COUNT);
+
+	for (src_vfid=0; src_vfid < numvfs; src_vfid++) {
+		ret = i40e_validate_vf(pf, src_vfid);
+		if (ret)
+			goto err_out;
+	        src_vf = &pf->vf[src_vfid];
+		if (src_vf->egress_vlan == dst_vfid) {
+			bitmap_set(mirror_src, src_vfid, 1);
+		}
+	}
 err_out:
         return ret;
 }
@@ -7194,13 +7211,17 @@ static int i40e_set_pf_egress_mirror_netdev(struct net_device *netdev, const int
         rule_type = I40E_AQC_MIRROR_RULE_TYPE_VPORT_INGRESS;
         src_vsi = pf->vsi[pf->lan_vsi];
         if (mirror == I40E_NO_VF_MIRROR) {
-                /* Del mirrors */
-                rule_id = pf->egress_rule_id;
-                ret = i40e_del_ingress_egress_mirror(src_vsi, rule_type,
-                                                     rule_id);
-                if (ret)
-                        goto err_out;
-                pf->egress_vlan = I40E_NO_VF_MIRROR;
+		if (i40e_validate_vf(pf, pf->egress_vlan)) {
+			mirror_vf = &pf->vf[mirror];
+			/* Del mirrors */
+			rule_id = pf->egress_rule_id;
+			ret = i40e_del_ingress_egress_mirror(src_vsi, rule_type,
+							     rule_id);
+			if (ret)
+				goto err_out;
+			pf->egress_vlan = I40E_NO_VF_MIRROR;
+			mirror_vf->data_changed = true;
+		}
         } else {
                 /* validate the mirror */
                 ret = i40e_validate_vf(pf, mirror);
@@ -7225,66 +7246,43 @@ err_out:
 
 
 
-int i40e_rem_mirror(struct net_device *netdev, int vf_id) {
+int i40e_vf_clear_mirror(struct net_device *netdev, int dst_vfid) {
         struct i40e_netdev_priv *np = netdev_priv(netdev);
         struct i40e_vsi *vsi = np->vsi;
-	int dst_vf, src_vf;
         struct i40e_pf *pf = vsi->back;
-        struct i40e_vf *vf;
-
         int ret;
-	ret = i40e_validate_vf(pf, vf_id);
+        DECLARE_BITMAP(clear_bitmap, I40E_MAX_VF_COUNT);
+        DECLARE_BITMAP(vlan_bitmap, VLAN_N_VID);
+
+	ret = i40e_validate_vf(pf, dst_vfid);
 	if (ret)
 		goto err_out;
-	vf = &pf->vf[vf_id];
-	//removing ingress and egress mirror for vf to vf case
-	for (src_vf=0; src_vf < pf->num_alloc_vfs; src_vf++) {
-		ret = i40e_get_ingress_mirror_netdev(netdev, src_vf, &dst_vf);
-		if (ret < 0)
-                	goto err_out;
-		if (dst_vf == vf_id) {
-        		ret = i40e_set_ingress_mirror_netdev(netdev, src_vf, -1);
-			if (ret >=0) {
-				vf->data_changed = true;
-			}
-		}
-	}
-	for (src_vf=0; src_vf < pf->num_alloc_vfs; src_vf++) {
-                ret = i40e_get_egress_mirror_netdev(netdev, src_vf, &dst_vf);
-                if (ret < 0)
-                        goto err_out;
-                if (dst_vf == vf_id) {
-                        ret = i40e_set_egress_mirror_netdev(netdev, src_vf, -1);
-			if (ret >=0) {
-				vf->data_changed = true;
-			}
-		}
-        }
+
+	bitmap_zero(clear_bitmap, I40E_MAX_VF_COUNT);
+	ret = i40e_set_ingress_mirror_netdev(netdev, dst_vfid, clear_bitmap);
+	if (ret < 0)
+		goto err_out;
+	ret = i40e_set_egress_mirror_netdev(netdev, dst_vfid, clear_bitmap);
+	if (ret < 0)
+		goto err_out;
 
 	//removing ingress and egress mirror for pf to vf case
-	if (pf->ingress_vlan == vf_id) {
+	if (pf->ingress_vlan == dst_vfid) {
 		ret=  i40e_set_pf_ingress_mirror_netdev(netdev,-1);
-		if (ret >=0) {
-			vf->data_changed = true;
-		}
+		if (ret < 0)
+			goto err_out;
 	}
 
-	if (pf->egress_vlan == vf_id) {
+	if (pf->egress_vlan == dst_vfid) {
                 ret=  i40e_set_pf_egress_mirror_netdev(netdev,-1);
-		if (ret >=0) {
-			vf->data_changed = true;
-		}
+		if (ret < 0)
+			goto err_out;
 	}
 
-	//removing vlan mirroring 
-	ret =  i40e_set_mirror_netdev(netdev,vf_id,0);
-	if (ret >=0) {
-		vf->data_changed = true;
-	}
-
-
-        printk("mirror removed\n");
-
+        bitmap_zero (vlan_bitmap, VLAN_N_VID);
+        ret = i40e_set_mirror_netdev(netdev, dst_vfid, vlan_bitmap);
+	if (ret < 0)
+		goto err_out;
 
 err_out:
         return ret;
@@ -7388,97 +7386,132 @@ static int i40e_set_egress_mirror(struct pci_dev *pdev, int vf_id,
 		vf->egress_rule_id = rule_id;
 	}
 err_out:
-	if (ret < 0) {
-		printk("Error: Failed to set dst_vf: %d src_vf:%d error : %d\n",mirror, vf_id, ret);
-	}
 	return ret;
 }
 
-/*int i40e_ndo_get_vf_mirror(struct net_device *netdev, int *nb_bytes, struct sk_buff *skb) {
-	
-}*/
 int i40e_ndo_set_vf_mirror(struct net_device *netdev,  struct nlattr *vf_mirror){
         int rem,ret;
 	struct nlattr *attr;
-	int clear_once = 1;
+	struct ifla_vf_mirror_vlan *ivml;
+	struct ifla_vf_mirror_vf *ivmv;
+	struct ifla_vf_mirror_pf *ivmp;
+	struct ifla_vf_mirror_clear *ivmc;
+	int curr_type = -1;
+	int curr_dst_vf = -1;
+        unsigned long *vlan_bits = NULL;
+        unsigned long *vf_ingress = NULL;
+        unsigned long *vf_egress = NULL;
+        ret = -ENOMEM;
+        vlan_bits = kcalloc(BITS_TO_LONGS(VLAN_N_VID), sizeof(unsigned long),
+                           GFP_KERNEL);
+        if (!vlan_bits)
+		goto exit;
+
+        vf_ingress = kcalloc(BITS_TO_LONGS(I40E_MAX_VF_COUNT), sizeof(unsigned long),
+                           GFP_KERNEL);
+        if (!vf_ingress)
+		goto exit;
+        vf_egress = kcalloc(BITS_TO_LONGS(I40E_MAX_VF_COUNT), sizeof(unsigned long),
+                           GFP_KERNEL);
+        if (!vf_egress)
+		goto exit;
 
 	nla_for_each_nested(attr, vf_mirror, rem) {
-		if(nla_type(attr) == IFLA_VF_MIRROR_VF){
-			struct ifla_vf_mirror_vf *ivmv;
-			ivmv= (struct ifla_vf_mirror_vf *) nla_data(attr);
-			if (clear_once) {
-				i40e_rem_mirror(netdev, ivmv->dst_vf);
-				clear_once = 0;
-			}
-			printk("%d \n",ivmv->src_vf);
-			if(ivmv->dir_mask == PORT_MIRRORING_INGRESS){
-				ret= i40e_set_ingress_mirror_netdev(netdev,ivmv->src_vf,ivmv->dst_vf);
-			}
-			else if(ivmv->dir_mask == PORT_MIRRORING_EGRESS){
-                                ret= i40e_set_egress_mirror_netdev(netdev,ivmv->src_vf,ivmv->dst_vf);
-                        }
-		
-                	if(ret){
-                        	goto err_out;
-                	}
-                	printk("vf to vf mirror done\n");
+		if (curr_type != -1 && curr_type != nla_type(attr))
+		{
+			ret = -EINVAL;
+			goto exit;
+		}
+		else
+			curr_type = nla_type(attr);
 
+		if(nla_type(attr) == IFLA_VF_MIRROR_VF){
+			ivmv= (struct ifla_vf_mirror_vf *) nla_data(attr);
+			if(curr_dst_vf != -1 && curr_dst_vf != ivmv->dst_vf) {
+				ret = -EINVAL;
+				goto exit;
+			}
+			else
+				curr_dst_vf = ivmv->dst_vf;
+
+			if(ivmv->dir_mask & PORT_MIRRORING_INGRESS){
+				bitmap_set(vf_ingress, ivmv->src_vf,1);
+			}
+			if(ivmv->dir_mask & PORT_MIRRORING_EGRESS){
+				bitmap_set(vf_egress, ivmv->src_vf,1);
+                        }
 		}
 		else if (nla_type(attr) == IFLA_VF_MIRROR_PF){
-			struct ifla_vf_mirror_pf *ivmp;
                         ivmp= (struct ifla_vf_mirror_pf *) nla_data(attr);
-			if (clear_once) {
-                                i40e_rem_mirror(netdev, ivmp->dst_vf);
-                                clear_once = 0;
-                        }
 
-			if(ivmp->dir_mask == PORT_MIRRORING_INGRESS){
+			if(ivmp->dir_mask && PORT_MIRRORING_INGRESS) {
                                 ret= i40e_set_pf_ingress_mirror_netdev(netdev,ivmp->dst_vf);
-                        }
-                        else if(ivmp->dir_mask == PORT_MIRRORING_EGRESS){
-                                ret= i40e_set_pf_egress_mirror_netdev(netdev,ivmp->dst_vf);
-                        }
-
-                        if(ret){
-                                goto err_out;
-                        }
-
-			printk("pf to vf mirror done\n");
-		}
-		else if (nla_type(attr) == IFLA_VF_MIRROR_VLAN){
-			struct ifla_vf_mirror_vlan *ivml;
-			ivml= (struct ifla_vf_mirror_vlan *) nla_data(attr);
-			if (clear_once) {
-                                i40e_rem_mirror(netdev, ivml->dst_vf);
-                                clear_once = 0;
-                        }
-
-			ret = i40e_set_mirror_netdev(netdev,ivml->dst_vf,ivml->vlan);
-
-			if(ret){
-				goto err_out;
+				if (ret)
+					goto exit;
 			}
 
-			printk("vlan to vf mirror done\n");
+                        if(ivmp->dir_mask && PORT_MIRRORING_EGRESS) {
+                                ret= i40e_set_pf_egress_mirror_netdev(netdev,ivmp->dst_vf);
+				if (ret)
+					goto exit;
+			}
+		}
+		else if (nla_type(attr) == IFLA_VF_MIRROR_VLAN){
+			ivml= (struct ifla_vf_mirror_vlan *) nla_data(attr);
+			if(curr_dst_vf != -1 && curr_dst_vf != ivml->dst_vf) {
+				ret = -EINVAL;
+				goto exit;
+			}
+			else
+				curr_dst_vf = ivml->dst_vf;
+			if (ivml->vlan < VLAN_N_VID)
+				bitmap_set(vlan_bits, ivml->vlan, 1);
+			else
+			{
+				ret = -EINVAL;
+				goto exit;
+			}
 		}
 		else if (nla_type(attr) == IFLA_VF_MIRROR_CLEAR){
-			struct ifla_vf_mirror_clear *ivmc;
 			ivmc = (struct ifla_vf_mirror_clear *) nla_data(attr);
-			i40e_rem_mirror(netdev, ivmc->dst_vf);
-			printk("clear mirror done\n");
+			ret = i40e_vf_clear_mirror(netdev, ivmc->dst_vf);
+			if (ret)
+				goto exit;
 		}
 
 	}
-err_out:
+	if (curr_type == IFLA_VF_MIRROR_VF){
+		dump_data("i40e_set_ingress_mirror_netdev", vf_ingress, I40E_MAX_VF_COUNT);
+		ret = i40e_set_ingress_mirror_netdev(netdev, curr_dst_vf, vf_ingress) ;
+		if (ret)
+			goto exit;
+		dump_data("i40e_set_egress_mirror_netdev", vf_egress, I40E_MAX_VF_COUNT);
+		ret = i40e_set_egress_mirror_netdev(netdev, curr_dst_vf, vf_egress);
+		if (ret)
+			goto exit;
+	}
+	else if (curr_type == IFLA_VF_MIRROR_VLAN) {
+		ret = i40e_set_mirror_netdev(netdev, curr_dst_vf, vlan_bits);
+		if (ret)
+			goto exit;
+	}
+
+exit:
+	if(vlan_bits)
+		kfree(vlan_bits);
+	if(vf_ingress)
+		kfree(vf_ingress);
+	if(vf_egress)
+		kfree(vf_egress);
         return ret; 
 }
 
 
-int get_set_position(unsigned long *bitmap, int size, int pos_count) {
-	int id;
+static unsigned int get_nth_set_bit(unsigned long *bitmap, int size, int n) {
+	unsigned int id;
 	for_each_set_bit(id, bitmap, size) {
-		pos_count --;
-		if (pos_count == 0) {
+		n --;
+		if (n == 0) {
 			return id;
 		}
 	}
@@ -7486,13 +7519,10 @@ int get_set_position(unsigned long *bitmap, int size, int pos_count) {
 
 }
 int i40e_ndo_get_vf_mirror(struct net_device *netdev, struct ifla_vf_mirror_info *vf_mirror) {
-
-
-
-	DECLARE_BITMAP(vlan_bits, VLAN_N_VID) = {0};
-	struct vf_bitmap vf_ingress = {0};
-	struct vf_bitmap vf_egress = {0};
-	struct vf_bitmap vf_bidir = {0};
+        unsigned long *vlan_bits = NULL;
+        unsigned long *vf_ingress = NULL;
+        unsigned long *vf_egress = NULL;
+        unsigned long *vf_bidir = NULL;
         struct i40e_netdev_priv *np = netdev_priv(netdev);
         struct i40e_vsi *vsi = np->vsi;
         struct i40e_pf *pf = vsi->back;
@@ -7501,111 +7531,119 @@ int i40e_ndo_get_vf_mirror(struct net_device *netdev, struct ifla_vf_mirror_info
 	int nb_vf_mirror = 0;
 	int pf_mirror_dir = 0;
 	int nb_vlan_mirror = 0;
-	int i_mirror = -1, e_mirror = -1, vfid;
+	int i_mirror = -1, e_mirror = -1;
 	int req_vf = vf_mirror->vf_to_vf.dst_vf;
 	int req_pos = vf_mirror->ele_index + 1;
-	int numvfs = pf->num_alloc_vfs;
-	int ret, mirror = 0;
+	int ret;
 	ret = i40e_validate_vf(pf, req_vf);
 	if (ret)
-		goto error;
+		return ret;
 	vf = &pf->vf[req_vf];
 	if (vf->data_changed && req_pos != 1) {
-		printk ("KART i40e data changed\n");
 		return -EAGAIN;
 	}
-	printk("KART i40e get ele_index: %d, vf : %d\n",vf_mirror->ele_index, vf_mirror->vf_to_vf.dst_vf);
+
+        ret = -ENOMEM;
+        vlan_bits = kcalloc(BITS_TO_LONGS(VLAN_N_VID), sizeof(unsigned long),
+                           GFP_KERNEL);
+        if (!vlan_bits)
+		goto exit;
+
+        vf_ingress = kcalloc(BITS_TO_LONGS(I40E_MAX_VF_COUNT), sizeof(unsigned long),
+                           GFP_KERNEL);
+        if (!vf_ingress)
+		goto exit;
+        vf_egress = kcalloc(BITS_TO_LONGS(I40E_MAX_VF_COUNT), sizeof(unsigned long),
+                           GFP_KERNEL);
+        if (!vf_egress)
+		goto exit;
+        vf_bidir = kcalloc(BITS_TO_LONGS(I40E_MAX_VF_COUNT), sizeof(unsigned long),
+                           GFP_KERNEL);
+        if (!vf_bidir)
+		goto exit;
+
 	vf->data_changed = 0;
-	for (vfid=0; vfid < numvfs; vfid++) {
-		ret = i40e_get_ingress_mirror_netdev(netdev, vfid, &mirror);
-		if (ret < 0)
-			goto error;
-		if (mirror == req_vf) {
-			bitmap_set(vf_ingress.vf_bits, vfid, 1);;
-		}
-		printk("Ingress mirror for %d, src: %d\n", mirror, vfid);
-		ret = i40e_get_egress_mirror_netdev(netdev, vfid, &mirror);
-		if (ret < 0)
-			goto error;
-		if (mirror == req_vf) {
-			bitmap_set(vf_egress.vf_bits, vfid, 1);;
-		}
-		printk("Egress mirror for %d, src: %d\n", mirror, vfid);
 
-
-	}
+	ret = i40e_get_ingress_mirror_netdev(netdev, req_vf, vf_ingress);
+	if (ret < 0)
+		goto exit;
+#if 0
+	dump_data("i40e_get_ingress_mirror_netdev", vf_ingress, I40E_MAX_VF_COUNT);
+#endif
+	ret = i40e_get_egress_mirror_netdev(netdev, req_vf, vf_egress);
+	if (ret < 0)
+		goto exit;
+#if 0
+	dump_data("i40e_get_egress_mirror_netdev", vf_egress, I40E_MAX_VF_COUNT);
+#endif
 	ret = i40e_get_mirror_netdev(netdev, req_vf, vlan_bits);
 	if (ret < 0)
-		goto error;
+		goto exit;
 	else
 		nb_vlan_mirror += ret;
-
-
-	bitmap_and(vf_bidir.vf_bits, vf_ingress.vf_bits, vf_egress.vf_bits, I40E_MAX_VF_COUNT);
-	bitmap_xor(vf_ingress.vf_bits, vf_bidir.vf_bits, vf_ingress.vf_bits, I40E_MAX_VF_COUNT);
-	bitmap_xor(vf_egress.vf_bits, vf_bidir.vf_bits, vf_egress.vf_bits, I40E_MAX_VF_COUNT);
-	nb_vf_mirror = bitmap_weight(vf_bidir.vf_bits, I40E_MAX_VF_COUNT);
+	bitmap_and(vf_bidir, vf_ingress, vf_egress, I40E_MAX_VF_COUNT);
+	bitmap_xor(vf_ingress, vf_bidir, vf_ingress, I40E_MAX_VF_COUNT);
+	bitmap_xor(vf_egress, vf_bidir, vf_egress, I40E_MAX_VF_COUNT);
+	nb_vf_mirror = bitmap_weight(vf_bidir, I40E_MAX_VF_COUNT);
 	if (req_pos <= nb_vf_mirror)
 	{
-		vf_mirror->vf_to_vf.src_vf = get_set_position(vf_bidir.vf_bits, I40E_MAX_VF_COUNT, req_pos);
+		vf_mirror->vf_to_vf.src_vf = get_nth_set_bit(vf_bidir, I40E_MAX_VF_COUNT, req_pos);
 		vf_mirror->vf_to_vf.dir_mask = PORT_MIRRORING_EGRESS | PORT_MIRRORING_INGRESS;
 		vf_mirror->action = IFLA_VF_MIRROR_VF;
-		printk("KART i40e vf to vf %d dir %d\n", vf_mirror->vf_to_vf.src_vf, vf_mirror->vf_to_vf.dir_mask);
-		return 0;
+		ret = 0;
+		goto exit;
 	}
 	else
 	{
 		req_pos -= nb_vf_mirror;
 	}
 
-	nb_vf_mirror = bitmap_weight(vf_ingress.vf_bits, I40E_MAX_VF_COUNT);
+	nb_vf_mirror = bitmap_weight(vf_ingress, I40E_MAX_VF_COUNT);
 	if (req_pos <= nb_vf_mirror)
 	{
-		vf_mirror->vf_to_vf.src_vf = get_set_position(vf_ingress.vf_bits, I40E_MAX_VF_COUNT, req_pos);
+		vf_mirror->vf_to_vf.src_vf = get_nth_set_bit(vf_ingress, I40E_MAX_VF_COUNT, req_pos);
 		vf_mirror->vf_to_vf.dir_mask = PORT_MIRRORING_INGRESS;
 		vf_mirror->action = IFLA_VF_MIRROR_VF;
-		printk("KART i40e vf to vf %d dir %d\n", vf_mirror->vf_to_vf.src_vf, vf_mirror->vf_to_vf.dir_mask);
-		return 0;
+		ret = 0;
+		goto exit;
 	}
 	else
 	{
 		req_pos -= nb_vf_mirror;
 	}
 
-	nb_vf_mirror = bitmap_weight(vf_egress.vf_bits, I40E_MAX_VF_COUNT);
+	nb_vf_mirror = bitmap_weight(vf_egress, I40E_MAX_VF_COUNT);
 	if (req_pos <= nb_vf_mirror)
 	{
-		vf_mirror->vf_to_vf.src_vf = get_set_position(vf_egress.vf_bits, I40E_MAX_VF_COUNT, req_pos);
+		vf_mirror->vf_to_vf.src_vf = get_nth_set_bit(vf_egress, I40E_MAX_VF_COUNT, req_pos);
 		vf_mirror->vf_to_vf.dir_mask = PORT_MIRRORING_EGRESS;
 		vf_mirror->action = IFLA_VF_MIRROR_VF;
-		printk("KART i40e vf to vf %d dir %d\n", vf_mirror->vf_to_vf.src_vf, vf_mirror->vf_to_vf.dir_mask);
-		return 0;
+		ret = 0;
+		goto exit;
 	}
 	else
 	{
 		req_pos -= nb_vf_mirror;
+		nb_vlan_mirror = bitmap_weight(vlan_bits, VLAN_N_VID);
+		if (req_pos <= nb_vlan_mirror)
+		{
+			vf_mirror->vlan_mirror.vlan = get_nth_set_bit(vlan_bits, VLAN_N_VID, req_pos);
+			vf_mirror->action = IFLA_VF_MIRROR_VLAN;
+			ret = 0;
+			goto exit;
+		}
+		else
+		{
+			req_pos -= nb_vlan_mirror;
+		}
 	}
-
-	nb_vlan_mirror = bitmap_weight(vlan_bits, VLAN_N_VID);
-	if (req_pos <= nb_vlan_mirror)
-	{
-		vf_mirror->vlan_mirror.vlan = get_set_position(vlan_bits, VLAN_N_VID, req_pos);
-		vf_mirror->action = IFLA_VF_MIRROR_VLAN;
-		printk("KART i40e vlan %d \n", vf_mirror->vlan_mirror.vlan);
-		return 0;
-	}
-	else
-	{
-		req_pos -= nb_vlan_mirror;
-	}
-
 
 	ret = i40e_get_pf_ingress_mirror_netdev(netdev, &i_mirror);
 	if (ret < 0)
-		goto error;
+		goto exit;
 	ret = i40e_get_pf_egress_mirror_netdev(netdev, &e_mirror);
 	if (ret < 0)
-		goto error;
+		goto exit;
 	if (i_mirror == req_vf) {
 		pf_mirror_dir = PORT_MIRRORING_INGRESS;
 	}
@@ -7616,11 +7654,22 @@ int i40e_ndo_get_vf_mirror(struct net_device *netdev, struct ifla_vf_mirror_info
 	if ((req_pos == 1) & (pf_mirror_dir != 0)) {
 		vf_mirror->pf_to_vf.dir_mask = pf_mirror_dir;
 		vf_mirror->action = IFLA_VF_MIRROR_PF;
-		printk("KART i40e pf to vf dir %d \n", vf_mirror->pf_to_vf.dir_mask);
-		return 0;
+		ret = 0;
+		goto exit;
 	}
-error:
-	return -ENODATA;
+
+	ret = -ENODATA;
+exit:
+	if(vlan_bits)
+		kfree(vlan_bits);
+	if(vf_ingress)
+		kfree(vf_ingress);
+	if(vf_egress)
+		kfree(vf_egress);
+	if(vf_bidir)
+		kfree(vf_bidir);
+
+	return ret;
 }
 
 /*
@@ -7965,16 +8014,19 @@ int i40e_set_pf_ingress_mirror_netdev(struct net_device *netdev, const int mirro
 	rule_type = I40E_AQC_MIRROR_RULE_TYPE_VPORT_EGRESS;
 	src_vsi = pf->vsi[pf->lan_vsi];
 
-	printk("%s  mirror : %d\n", __FUNCTION__,  mirror);
-
 	if (mirror == I40E_NO_VF_MIRROR) {
-		/* Del mirrors */
-		rule_id = pf->ingress_rule_id;
-		ret = i40e_del_ingress_egress_mirror(src_vsi, rule_type,
-						     rule_id);
-		if (ret)
-			goto err_out;
-		pf->ingress_vlan = I40E_NO_VF_MIRROR;
+		if(i40e_validate_vf(pf, pf->ingress_vlan))
+		{
+			mirror_vf = &pf->vf[mirror];
+			mirror_vf->data_changed = true;
+			/* Del mirrors */
+			rule_id = pf->ingress_rule_id;
+			ret = i40e_del_ingress_egress_mirror(src_vsi, rule_type,
+							     rule_id);
+			if (ret)
+				goto err_out;
+			pf->ingress_vlan = I40E_NO_VF_MIRROR;
+		}
 	} else {
 		/* validate the mirror */
 		ret = i40e_validate_vf(pf, mirror);
